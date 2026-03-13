@@ -133,7 +133,7 @@ pub const Compound = struct {
         @constCast(self).data.deinit();
     }
 
-    pub fn get(self: *const Self, key: []const u8) Value {
+    pub inline fn get(self: *const Self, key: []const u8) Value {
         return self.data.get(key) orelse .End;
     }
 };
@@ -166,7 +166,7 @@ pub const List = struct {
         self.allocator.free(self.values);
     }
 
-    pub fn get(self: *const Self, idx: u32) Value {
+    pub inline fn get(self: *const Self, idx: u32) Value {
         if(idx >= self.values.len) { return .End; }
         return self.values[idx];
     }
@@ -193,7 +193,7 @@ pub const NBT = struct {
         self.fields.deinit();
     }
 
-    pub fn get(self: *const Self, key: []const u8) Value {
+    pub inline fn get(self: *const Self, key: []const u8) Value {
         return self.fields.get(key);
     }
 };

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
+const Allocator = std.mem.Allocator;
 
 const nbt = @import("nbt.zig");
 
@@ -44,18 +45,21 @@ pub const VarInt = struct {
         return .{ .value = @bitCast(i) };
     }
 
-    pub fn into(self: @This(), writer: Writer) !void {
-        // if parameter is 0, @clz returns the bit width of the parameter type
-        if(self.value == 0) {
+    pub inline fn write(self: @This(), writer: Writer) !void {
+        return try writeInt(self.value, writer);
+    }
+
+    pub fn writeInt(value: i32, writer: Writer) !void {
+        if(value == 0) {
             _ = try writer.writeByte(0);
             return;
         }
-        const needed_bytes: u8 = (@bitSizeOf(@TypeOf(self.value)) - @clz(self.value) - 1) / 7 + 1;
+        const needed_bytes: u8 = (@bitSizeOf(i32) - @clz(value) - 1) / 7 + 1;
         var bytes: [needed_bytes]u8 = undefined;
         for(0..needed_bytes - 1) |idx| {
-            bytes[idx] = (@as(u8, @truncate(self.value >> (idx * 7))) & 0x7f) | 0x80;
+            bytes[idx] = (@as(u8, @truncate(value >> (idx * 7))) & 0x7f) | 0x80;
         }
-        bytes[needed_bytes - 1] = @as(u8, @truncate(self.value >> ((needed_bytes - 1) * 7))) & 0x7f;
+        bytes[needed_bytes - 1] = @as(u8, @truncate(value >> ((needed_bytes - 1) * 7))) & 0x7f;
 
         _ = try writer.write(&bytes);
     }
@@ -74,32 +78,172 @@ pub const VarLong = struct {
         return .{ .value = @bitCast(i) };
     }
 
-    pub fn into(self: @This(), writer: Writer) !void {
-        // if parameter is 0, @clz returns the bit width of the parameter type
-        if(self.value == 0) {
+    pub inline fn write(self: @This(), writer: Writer) !void {
+        return try writeLong(self.value, writer);
+    }
+
+    pub fn writeLong(value: i64, writer: Writer) !void {
+        if(value == 0) {
             _ = try writer.writeByte(0);
             return;
         }
-        const needed_bytes: u8 = (@bitSizeOf(@TypeOf(self.value)) - @clz(self.value) - 1) / 7 + 1;
+        const needed_bytes: u8 = (@bitSizeOf(i64) - @clz(value) - 1) / 7 + 1;
         var bytes: [needed_bytes]u8 = undefined;
         for(0..needed_bytes - 1) |idx| {
-            bytes[idx] = (@as(u8, @truncate(self.value >> (idx * 7))) & 0x7f) | 0x80;
+            bytes[idx] = (@as(u8, @truncate(value >> (idx * 7))) & 0x7f) | 0x80;
         }
-        bytes[needed_bytes - 1] = @as(u8, @truncate(self.value >> ((needed_bytes - 1) * 7))) & 0x7f;
+        bytes[needed_bytes - 1] = @as(u8, @truncate(value >> ((needed_bytes - 1) * 7))) & 0x7f;
 
         _ = try writer.write(&bytes);
     }
 };
 
-pub const String = []const u8; // deconstruct fat pointer into len->VarInt and body
+pub const String = struct {
+    value: []const u8,
+    allocator: Allocator,
+
+    pub fn init(reader: Reader, allocator: Allocator) !@This() {
+        const len = (try VarInt.init(reader)).value;
+        const buf = try allocator.alloc(u8, len);
+        @memcpy(buf, try reader.take(len));
+        return .{ 
+            .value = buf,
+            .allocator = allocator,
+        };
+    }
+
+    pub inline fn deinit(self: @This()) void {
+        self.allocator.free(self.value);
+    }
+
+    pub inline fn write(self: @This(), writer: Writer) !void {
+        return try writeString(self.value, writer);
+    }
+
+    pub inline fn writeString(value: []const u8, writer: Writer) !void {
+        _ = try VarInt.writeInt(value.len, writer);
+        _ = try writer.write(value);
+    }
+};
 
 pub const Chat = String;
 
 pub const Chunk = []const u8;
 
-pub const Metadata = []const u8;
+pub const Metadata = struct {
+    keys: []const u8,
+    values: []const Type,
+    allocator: Allocator,
 
-pub const Slot = []const u8;
+    const Type = union(enum(u3)) {
+        byte: i8 = 0,
+        short: i16 = 1,
+        int: i32 = 2,
+        float: f32 = 3,
+        string: String = 4,
+        slot: Slot = 5,
+        // xyz: struct {x: i32, y: i32, z: i32}, // not currently used
+        rotation: Rotation = 7,
+    };
+
+    pub const Rotation = struct {
+        pitch: f32,
+        yaw: f32,
+        roll: f32,
+    };
+
+    pub fn init(reader: Reader, allocator: Allocator) !@This() {
+        var keys: std.ArrayList(u8) = .empty;
+        defer keys.deinit(allocator);
+        var values: std.ArrayList(Type) = .empty;
+        defer values.deinit(allocator);
+        
+        while (try reader.takeByte() != 0x7f) {
+            const kv = try reader.takeByte();
+            try keys.append(allocator, kv & 0x1f);
+            try values.append(allocator, switch(kv >> 5) {
+                0 => .{ .byte = try reader.takeByteSigned() },
+                1 => .{ .short = try reader.takeInt(i16, .big) },
+                2 => .{ .int = try reader.takeInt(i32, .big) },
+                3 => .{ .float = @as(f32, @bitCast(try reader.takeInt(u32, .big))) },
+                4 => .{ .string = try String.init(reader, allocator) },
+                5 => .{ .slot = try Slot.init(reader, allocator) },
+                7 => .{ .rotation = .{
+                    .pitch = @as(f32, @bitCast(try reader.takeInt(u32, .big))),
+                    .yaw = @as(f32, @bitCast(try reader.takeInt(u32, .big))),
+                    .roll = @as(f32, @bitCast(try reader.takeInt(u32, .big))),
+                }},
+            });
+        }
+    
+        return .{
+            .keys = keys.toOwnedSlice(allocator),
+            .values = values.toOwnedSlice(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: @This()) void {
+        self.allocator.free(self.keys);
+        for(self.values) |element| {
+            switch(element) {
+                .string => |s| s.deinit(),
+                .slot => |s| s.deinit(),
+                else => {},
+            }
+        }
+        self.allocator.free(self.values);
+    }
+
+    // I won't ever need to send Metadata to the server
+};
+
+pub const Slot = struct {
+    itemID: i16,
+    item_count: i8,
+    item_damage: i16,
+    nbt_available: bool,
+    nbt: ?nbt.NBT,
+
+    pub fn init(reader: Reader, allocator: Allocator) !@This() {
+        const itemID = try reader.takeInt(i16, .big);
+        if(itemID == -1) {
+            return .{
+                .itemID = itemID,
+                .item_count = undefined,
+                .item_damage = undefined,
+                .nbt_available = undefined,
+                .nbt = undefined,
+            };
+        }
+        return .{
+            .itemID = itemID,
+            .item_count = try reader.takeInt(i8, .big),
+            .item_damage = try reader.takeInt(i16, .big),
+            .nbt_available = (try reader.peekByte()) == 1,
+            .nbt = if((try reader.takeByte()) == 1) nbt.NBT.init(&reader, allocator) else null,
+            // TODO see if i need to init Compound instead
+        };
+    }
+
+    pub fn deinit(self: @This()) void {
+        if(self.itemID != -1) {
+            if(self.nbt_available) {
+                self.nbt.?.deinit();
+            }
+        }
+    }
+
+    pub fn write(self: @This(), writer: Writer) !void {
+        _ = .{ self, writer };
+        // TODO implement
+    }
+
+    const itemID_enum = enum(i16) {
+        empty = -1,
+        // ...
+    };
+};
 
 pub const Position = packed struct {
     x: i26,

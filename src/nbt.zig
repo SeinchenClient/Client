@@ -88,14 +88,14 @@ pub const Value = union(Tag) {
 fn initString(reader: *Reader, allocator: Allocator) ![]const u8 {
     const len = try reader.takeInt(u16, .big);
     const buf = try allocator.alloc(u8, len);
-    std.mem.copyForwards(u8, buf, try reader.take(len));
+    @memcpy(buf, reader.take(len));
     return buf;
 }
 
 fn initArray(reader: *Reader, allocator: Allocator, T: type) ![]const T {
     const len = try reader.takeInt(u32, .big);
     const buf = try allocator.alloc(T, len);
-    std.mem.copyForwards(T, buf, @ptrCast(@alignCast(try reader.take(len))));
+    @memcpy(buf, try reader.take(len));
     return buf;
 }
 

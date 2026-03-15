@@ -35,40 +35,52 @@ const nbt = @import("nbt.zig");
 pub const VarInt = struct { 
     value: i32,
 
-    pub fn init(reader: Reader) !@This() { // TODO test probably need to switch endianness
+    pub fn init(reader: *Reader) !@This() { // TODO test probably need to switch endianness
         var i: u32 = 0;
         for(0..5) |offset| {
             const t = try reader.takeByte();
-            i |= (t & 0x7f) << (offset * 7);
+            i |= (t & 0x7f) << @as(u3, @truncate(offset * 7));
             if(t & 0x80 == 1) continue else break;
         }
         return .{ .value = @bitCast(i) };
     }
 
-    pub inline fn write(self: @This(), writer: Writer) !void {
+    pub inline fn write(self: @This(), writer: *Writer) !void {
         return try writeInt(self.value, writer);
     }
 
-    pub fn writeInt(value: i32, writer: Writer) !void {
+    pub fn writeInt(value: i32, writer: *Writer) !void {
         if(value == 0) {
             _ = try writer.writeByte(0);
             return;
         }
         const needed_bytes: u8 = (@bitSizeOf(i32) - @clz(value) - 1) / 7 + 1;
-        var bytes: [needed_bytes]u8 = undefined;
+        // var bytes: [needed_bytes]u8 = undefined;
         for(0..needed_bytes - 1) |idx| {
-            bytes[idx] = (@as(u8, @truncate(value >> (idx * 7))) & 0x7f) | 0x80;
+            // bytes[idx] = (@as(u8, @truncate(value >> (idx * 7))) & 0x7f) | 0x80;
+            const byte = (@as(u8, @truncate(@as(u32, @bitCast(value)) >> @truncate(idx * 7))) & 0x7f) | 0x80;
+            _ = try writer.writeByte(byte);
         }
-        bytes[needed_bytes - 1] = @as(u8, @truncate(value >> ((needed_bytes - 1) * 7))) & 0x7f;
+        // bytes[needed_bytes - 1] = @as(u8, @truncate(value >> ((needed_bytes - 1) * 7))) & 0x7f;
+        const byte = @as(u8, @truncate(@as(u32, @bitCast(value)) >> @truncate((needed_bytes - 1) * 7))) & 0x7f;
+        _ = try writer.writeByte(byte);
 
-        _ = try writer.write(&bytes);
+        // _ = try writer.write(&bytes);
+    }
+
+    pub inline fn countBytes(self: @This()) u32 {
+        return countBytesInt(self.value);
+    }
+
+    pub inline fn countBytesInt(value: i32) u32 {
+        return (@bitSizeOf(i32) - @clz(value) - 1) / 7 + 1;
     }
 };
 
 pub const VarLong = struct {
     value: i64,
 
-    pub fn init(reader: Reader) !@This() { // TODO test probably need to switch endianness
+    pub fn init(reader: *Reader) !@This() { // TODO test probably need to switch endianness
         var i: u64 = 0;
         for(0..10) |offset| {
             const t = try reader.takeByte();
@@ -78,11 +90,11 @@ pub const VarLong = struct {
         return .{ .value = @bitCast(i) };
     }
 
-    pub inline fn write(self: @This(), writer: Writer) !void {
+    pub inline fn write(self: @This(), writer: *Writer) !void {
         return try writeLong(self.value, writer);
     }
 
-    pub fn writeLong(value: i64, writer: Writer) !void {
+    pub fn writeLong(value: i64, writer: *Writer) !void {
         if(value == 0) {
             _ = try writer.writeByte(0);
             return;
@@ -96,13 +108,21 @@ pub const VarLong = struct {
 
         _ = try writer.write(&bytes);
     }
+
+    pub inline fn countBytes(self: @This()) u32 {
+        return countBytesLong(self.value);
+    }
+
+    pub inline fn countBytesLong(value: i64) u32 {
+        return (@bitSizeOf(i64) - @clz(value) - 1) / 7 + 1;
+    }
 };
 
 pub const String = struct {
     value: []const u8,
     allocator: Allocator,
 
-    pub fn init(reader: Reader, allocator: Allocator) !@This() {
+    pub fn init(reader: *Reader, allocator: Allocator) !@This() {
         const len = (try VarInt.init(reader)).value;
         const buf = try allocator.alloc(u8, len);
         @memcpy(buf, try reader.take(len));
@@ -116,13 +136,21 @@ pub const String = struct {
         self.allocator.free(self.value);
     }
 
-    pub inline fn write(self: @This(), writer: Writer) !void {
+    pub inline fn write(self: @This(), writer: *Writer) !void {
         return try writeString(self.value, writer);
     }
 
-    pub inline fn writeString(value: []const u8, writer: Writer) !void {
-        _ = try VarInt.writeInt(value.len, writer);
+    pub inline fn writeString(value: []const u8, writer: *Writer) !void {
+        _ = try VarInt.writeInt(@intCast(value.len), writer);
         _ = try writer.write(value);
+    }
+
+    pub inline fn countBytes(self: @This()) u32 {
+        return countBytesString(self.value);
+    }
+
+    pub inline fn countBytesString(value: []const u8) u32 {
+        return VarInt.countBytesInt(@intCast(value.len)) + @as(u32, @intCast(value.len));
     }
 };
 
@@ -152,7 +180,7 @@ pub const Metadata = struct {
         roll: f32,
     };
 
-    pub fn init(reader: Reader, allocator: Allocator) !@This() {
+    pub fn init(reader: *Reader, allocator: Allocator) !@This() {
         var keys: std.ArrayList(u8) = .empty;
         defer keys.deinit(allocator);
         var values: std.ArrayList(Type) = .empty;
@@ -205,7 +233,7 @@ pub const Slot = struct {
     nbt_available: bool,
     nbt: ?nbt.NBT,
 
-    pub fn init(reader: Reader, allocator: Allocator) !@This() {
+    pub fn init(reader: *Reader, allocator: Allocator) !@This() {
         const itemID = try reader.takeInt(i16, .big);
         if(itemID == -1) {
             return .{
@@ -234,8 +262,13 @@ pub const Slot = struct {
         }
     }
 
-    pub fn write(self: @This(), writer: Writer) !void {
+    pub fn write(self: @This(), writer: *Writer) !void {
         _ = .{ self, writer };
+        // TODO implement
+    }
+
+    pub inline fn countBytes(self: @This()) u32 {
+        _ = self;
         // TODO implement
     }
 

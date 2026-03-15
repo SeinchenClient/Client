@@ -12,6 +12,11 @@ const Slot = datatypes.Slot;
 
 const NBT = @import("nbt.zig").NBT;
 
+const std = @import("std");
+const Writer = std.Io.Writer;
+const Reader = std.Io.Reader;
+const Allocator = std.mem.Allocator;
+
 pub const State = enum {
     handshake,
     status,
@@ -20,13 +25,13 @@ pub const State = enum {
 };
 
 pub const ID = union(State) {
-    handshake: union(u1) {
+    handshake: union(enum(u1)) {
         clientbound: enum(u8) {},
         serverbound: enum(u8) {
             Handshake = 0x00,
         },
     },
-    status: union(u1) {
+    status: union(enum(u1)) {
         clientbound: enum(u8) {
             Response = 0x00,
             Pong = 0x01,
@@ -36,7 +41,7 @@ pub const ID = union(State) {
             Ping = 0x01,
         },
     },
-    login: union(u1) {
+    login: union(enum(u1)) {
         clientbound: enum(u8) {
             Disconnect = 0x00,
             Encryption_Request = 0x01,
@@ -48,7 +53,7 @@ pub const ID = union(State) {
             Encryption_Response = 0x01,
         },
     },
-    play: union(u1) {
+    play: union(enum(u1)) {
         clientbound: enum(u8) {
             Keep_Alive = 0x00,
             Join_Game = 0x01,
@@ -170,6 +175,25 @@ pub const handshake = struct {
             server_address: String,
             server_port: u16,
             next_state: VarInt,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(self.protocol_version.countBytes()
+                                    + self.server_address.countBytes()
+                                    + 2
+                                    + self.next_state.countBytes()
+                                    + 1),
+                    writer
+                );
+                const id: ID = .{.handshake = .{.serverbound = .Handshake}};
+                try VarInt.writeInt(@intFromEnum(id.handshake.serverbound), writer);
+                
+                try self.protocol_version.write(writer);
+                try self.server_address.write(writer);
+                _ = try writer.writeInt(u16, self.server_port, .big);
+                try self.next_state.write(writer);
+
+                try writer.flush();
+            }
         };
     };
 };

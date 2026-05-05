@@ -17,11 +17,13 @@ const Writer = std.Io.Writer;
 const Reader = std.Io.Reader;
 const Allocator = std.mem.Allocator;
 
-pub const State = enum {
-    handshake,
-    status,
-    login,
-    play,
+const InvalidData = error.InvalidData;
+
+pub const State = enum(u2) {
+    handshake = 0,
+    status = 1,
+    login = 2,
+    play = 3,
 };
 
 pub const ID = union(State) {
@@ -161,11 +163,6 @@ pub const ID = union(State) {
     },
 };
 
-pub const Header = struct {
-    length: VarInt,
-    packet_ID: ID,
-};
-
 pub const handshake = struct {
     pub const clientbound = struct {};
 
@@ -177,15 +174,16 @@ pub const handshake = struct {
             next_state: VarInt,
 
             pub fn send(self: @This(), writer: *Writer) !void {
-                try VarInt.writeInt(@bitCast(self.protocol_version.countBytes()
-                                    + self.server_address.countBytes()
-                                    + 2
-                                    + self.next_state.countBytes()
-                                    + 1),
+                try VarInt.writeInt(@bitCast(
+                        self.protocol_version.countBytes()
+                        + self.server_address.countBytes()
+                        + 2
+                        + self.next_state.countBytes()
+                        + 1),
                     writer
                 );
-                const id: ID = .{.handshake = .{.serverbound = .Handshake}};
-                try VarInt.writeInt(@intFromEnum(id.handshake.serverbound), writer);
+                const id: ID = .{ .handshake = .{ .serverbound = .Handshake } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.handshake.serverbound), writer);
                 
                 try self.protocol_version.write(writer);
                 try self.server_address.write(writer);
@@ -202,18 +200,59 @@ pub const status = struct {
     pub const clientbound = struct {
         pub const Response = struct {
             JSON_response: String,
+
+            pub fn receive(reader: *Reader, len: u32, allocator: Allocator) !@This() {
+                var self: @This() = undefined;
+                self.JSON_response = try String.init(reader, allocator);
+
+                if(len == 
+                    self.JSON_response.countBytes()
+                ) return self else return InvalidData;
+            }
         };
 
         pub const Pong = struct {
             payload: u64,
+
+            pub fn receive(reader: *Reader, len: u32, _: Allocator) !@This() {
+                var self: @This() = undefined;
+                self.payload = try reader.takeInt(u64, .big);
+
+                if(len ==
+                    8
+                ) return self else return InvalidData;
+            }
         };
     };
 
     pub const serverbound = struct {
-        pub const Request = struct {};
+        pub const Request = struct {
+            pub fn send(self: @This(), writer: *Writer) !void {
+                _ = self;
+                try VarInt.writeInt(1, writer);
+                const id: ID = .{ .status = .{ .serverbound = .Request } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.handshake.serverbound), writer);
+
+                try writer.flush();
+            }
+        };
 
         pub const Ping = struct {
             payload: u64,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        8
+                        + 1),
+                    writer
+                );
+                const id: ID = .{ .status = .{ .serverbound = .Ping } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.handshake.serverbound), writer);
+
+                try self.payload.write(writer);
+
+                try writer.flush();
+            }
         };
     };
 };
@@ -222,6 +261,15 @@ pub const login = struct {
     pub const clientbound = struct {
         pub const Disconnect = struct {
             reason: Chat,
+
+            pub fn receive(reader: *Reader, len: u32, allocator: Allocator) !@This() {
+                var self: @This() = undefined;
+                self.reason = try Chat.init(reader, allocator);
+
+                if(len ==
+                    self.reason.countBytes()
+                ) return self else return InvalidData;
+            }
         };
         
         pub const Encryption_Request = struct {
@@ -230,21 +278,72 @@ pub const login = struct {
             public_key: []const u8,
             verify_token_length: VarInt,
             verify_token: []const u8,
+
+            pub fn receive(reader: *Reader, len: u32, allocator: Allocator) !@This() {
+                var self: @This() = undefined;
+                self.server_ID = try String.init(reader, allocator);
+                self.public_key_length = try VarInt.init(reader);
+                self.public_key = try reader.take(@intCast(self.public_key_length.value));
+                self.verify_token_length = try VarInt.init(reader);
+                self.verify_token = try reader.take(@intCast(self.verify_token_length.value));
+
+                if(len ==
+                    self.server_ID.countBytes()
+                    + self.public_key_length.countBytes()
+                    + self.public_key.len
+                    + self.verify_token_length.countBytes()
+                    + self.verify_token.len
+                ) return self else return InvalidData;
+            }
         };
 
         pub const Login_Success = struct {
             UUID: String,
             username: String,
+
+            pub fn receive(reader: *Reader, len: u32, allocator: Allocator) !@This() {
+                var self: @This() = undefined;
+                self.UUID = try String.init(reader, allocator);
+                self.username = try String.init(reader, allocator);
+
+                if(len ==
+                    self.UUID.countBytes()
+                    + self.username.countBytes()
+                ) return self else return InvalidData;
+            }
         };
 
         pub const Set_Compression = struct {
             threshold: VarInt,
+
+            pub fn receive(reader: *Reader, len: u32, _: Allocator) !@This() {
+                var self: @This() = undefined;
+                self.threshold = try VarInt.init(reader);
+
+                if(len ==
+                    self.threshold.countBytes()
+                ) return self else return InvalidData;
+            }
         };
     };
 
     pub const serverbound = struct {
         pub const Login_Start = struct {
             name: String,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        self.name.countBytes()
+                        + 1),
+                    writer
+                );
+                const id: ID = .{ .login = .{ .serverbound = .Login_Start } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.login.serverbound), writer);
+
+                try self.name.write(writer);
+
+                try writer.flush();
+            }
         };
 
         pub const Encryption_Response = struct {
@@ -252,6 +351,26 @@ pub const login = struct {
             shared_secret: []const u8,
             verify_token_length: VarInt,
             verify_token: []const u8,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        self.shared_secret_length.countBytes()
+                        + @as(u32, @truncate(self.shared_secret.len))
+                        + self.verify_token_length.countBytes()
+                        + @as(u32, @truncate(self.verify_token.len))
+                        + 1),
+                    writer
+                );
+                const id: ID = .{ .login = .{ .serverbound = .Encryption_Response } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.login.serverbound), writer);
+
+                try self.shared_secret_length.write(writer);
+                _ = try writer.write(self.shared_secret);
+                try self.verify_token_length.write(writer);
+                _ = try writer.write(self.verify_token);
+
+                try writer.flush();
+            }
         };
     };
 };
@@ -1099,10 +1218,38 @@ pub const play = struct {
     pub const serverbound = struct {
         pub const Keep_Alive = struct {
             keep_alive_ID: VarInt,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(
+                        @bitCast(self.keep_alive_ID.countBytes()
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Keep_Alive } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                try self.keep_alive_ID.write(writer);
+
+                try writer.flush();
+            }
         };
 
         pub const Chat_Message = struct {
             message: String,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        self.message.countBytes()
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Chat_Message } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                try self.message.write(writer);
+
+                try writer.flush();
+            }
         };
 
         pub const Use_Entity = struct {
@@ -1111,10 +1258,48 @@ pub const play = struct {
             target_x: ?f32,
             target_y: ?f32,
             target_z: ?f32,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                // floats only if type is 'interact at' (2)
+                const target: u32 = if(self.@"type".value == 2) 3 * 4 else 0;
+                try VarInt.writeInt(@bitCast(
+                        self.target.countBytes()
+                        + self.@"type".countBytes()
+                        + target
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Use_Entity } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                try self.target.write(writer);
+                try self.@"type".write(writer);
+                if(target != 0) {
+                    _ = try writer.writeInt(u32, @bitCast(self.target_x.?), .big);
+                    _ = try writer.writeInt(u32, @bitCast(self.target_y.?), .big);
+                    _ = try writer.writeInt(u32, @bitCast(self.target_z.?), .big);
+                }
+
+                try writer.flush();
+            }
         };
 
         pub const Player = struct {
             on_ground: bool,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        1 
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Player } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeByte(@bitCast(self.on_ground));
+
+                try writer.flush();
+            }
         };
 
         pub const Player_Position = struct {
@@ -1122,12 +1307,50 @@ pub const play = struct {
             feet_y: f64,
             z: f64,
             on_ground: bool,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        8
+                        + 8
+                        + 8
+                        + 1
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Player_Position } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeInt(u64, @bitCast(self.x), .big);
+                _ = try writer.writeInt(u64, @bitCast(self.feet_y), .big);
+                _ = try writer.writeInt(u64, @bitCast(self.z), .big);
+                _ = try writer.writeByte(@bitCast(self.on_ground));
+
+                try writer.flush();
+            }
         };
 
         pub const Player_Look = struct {
             yaw: f32,
             pitch: f32,
             on_ground: bool,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        4
+                        + 4
+                        + 1
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Player_Look } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeInt(u32, @bitCast(self.yaw), .big);
+                _ = try writer.writeInt(u32, @bitCast(self.pitch), .big);
+                _ = try writer.writeByte(@bitCast(self.on_ground));
+
+                try writer.flush();
+            }
         };
 
         pub const Player_Position_And_Look = struct {
@@ -1137,6 +1360,30 @@ pub const play = struct {
             yaw: f32,
             pitch: f32,
             on_ground: bool,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        8
+                        + 8
+                        + 8
+                        + 4
+                        + 4
+                        + 1
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Player_Position_And_Look } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeInt(u64, @bitCast(self.x), .big);
+                _ = try writer.writeInt(u64, @bitCast(self.feet_y), .big);
+                _ = try writer.writeInt(u64, @bitCast(self.z), .big);
+                _ = try writer.writeInt(u32, @bitCast(self.yaw), .big);
+                _ = try writer.writeInt(u32, @bitCast(self.pitch), .big);
+                _ = try writer.writeByte(@bitCast(self.on_ground));
+
+                try writer.flush();
+            }
         };
 
         pub const Player_Digging = struct {
@@ -1161,6 +1408,24 @@ pub const play = struct {
                 neg_x = 4,
                 pos_x = 5,
             };
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        1
+                        + 8
+                        + 1
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Player_Digging } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeByte(@bitCast(self.status));
+                _ = try writer.writeInt(u64, @bitCast(self.location), .big);
+                _ = try writer.writeByte(@bitCast(self.face));
+
+                try writer.flush();
+            }
         };
 
         pub const Player_Block_Placement = struct {
@@ -1170,13 +1435,60 @@ pub const play = struct {
             cursor_position_x: i8,
             cursor_position_y: u8,
             cursor_position_z: i8,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        8
+                        + 1
+                        + self.held_item.countBytes()
+                        + 1
+                        + 1
+                        + 1
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Player_Block_Placement } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeInt(u64, @bitCast(self.location), .big);
+                _ = try writer.writeByte(@bitCast(self.face));
+                try self.held_item.write(writer);
+                _ = try writer.writeByte(@bitCast(self.cursor_position_x));
+                _ = try writer.writeByte(@bitCast(self.cursor_position_y));
+                _ = try writer.writeByte(@bitCast(self.cursor_position_z));
+
+                try writer.flush();
+            }
         };
 
         pub const Held_Item_Change = struct {
             slot: i16,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        2
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Held_Item_Change } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeInt(i16, self.slot, .big);
+
+                try writer.flush();
+            }
         };
 
-        pub const Animation = struct {};
+        pub const Animation = struct {
+            pub fn send(self: @This(), writer: *Writer) !void {
+                _ = self;
+                try VarInt.writeInt(1, writer);
+                const id: ID = .{ .play = .{ .serverbound = .Animation } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                try writer.flush();
+            }
+        };
 
         pub const Entity_Action = struct {
             entity_ID: VarInt,
@@ -1192,16 +1504,66 @@ pub const play = struct {
                 jump_with_horse = 5,
                 open_ridden_horse_inventory = 6,
             };
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        self.entity_ID.countBytes()
+                        + self.action_ID.countBytes()
+                        + self.action_parameter.countBytes()
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Entity_Action } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                try self.entity_ID.write(writer);
+                try self.action_ID.write(writer);
+                try self.action_parameter.write(writer);
+
+                try writer.flush();
+            }
         };
 
         pub const Steer_Vehicle = struct {
             sideways: f32,
             forward: f32,
             flags: u8,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        4
+                        + 4
+                        + 1
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Steer_Vehicle } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeInt(u32, @bitCast(self.sideways), .big);
+                _ = try writer.writeInt(u32, @bitCast(self.forward), .big);
+                _ = try writer.writeByte(self.flags);
+
+                try writer.flush();
+            }
         };
 
         pub const Close_Window = struct {
             window_ID: u8,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        1
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Close_Window } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeByte(self.window_ID);
+
+                try writer.flush();
+            }
         };
 
         pub const Click_Window = struct {
@@ -1212,23 +1574,107 @@ pub const play = struct {
             mode: i8,
             clicked_item: Slot,
 
+            const mode_enum = enum(i8) {
+                normal = 0,
+                shift = 1,
+                number = 2,
+                middle = 3,
+                drop = 4,
+                drag = 5,
+                double = 6,
+            };
+
             // TODO see https://minecraft.wiki/w/Protocol?oldid=2772100#Click_Window
+            
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        1
+                        + 2
+                        + 1
+                        + 2
+                        + 1
+                        + self.clicked_item.countBytes()
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Click_Window } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeByte(self.window_ID);
+                _ = try writer.writeInt(i16, self.slot, .big);
+                _ = try writer.writeByte(@bitCast(self.button));
+                _ = try writer.writeInt(i16, self.action_number, .big);
+                _ = try writer.writeByte(@bitCast(self.mode));
+                try self.clicked_item.write(writer);
+
+                try writer.flush();
+            }
         };
 
         pub const Confirm_Transaction = struct {
             window_ID: i8,
             action_number: i16,
             accepted: bool,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        1
+                        + 2
+                        + 1
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Confirm_Transaction } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeByte(@bitCast(self.window_ID));
+                _ = try writer.writeInt(i16, self.action_number, .big);
+                _ = try writer.writeByte(@bitCast(self.accepted));
+
+                try writer.flush();
+            }
         };
 
         pub const Creative_Inventory_Action = struct {
             slot: i16,
             clicked_item: Slot,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        2
+                        + self.clicked_item.countBytes()
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Creative_Inventory_Action } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeInt(i16, self.slot, .big);
+                try self.clicked_item.write(writer);
+
+                try writer.flush();
+            }
         };
 
         pub const Enchant_Item = struct {
             window_ID: i8,
             enchantment: i8,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        1
+                        + 1
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Enchant_Item } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeByte(@bitCast(self.window_ID));
+                _ = try writer.writeByte(@bitCast(self.enchantment));
+
+                try writer.flush();
+            }
         };
 
         pub const Update_Sign = struct {
@@ -1237,6 +1683,28 @@ pub const play = struct {
             line_2: Chat,
             line_3: Chat,
             line_4: Chat,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        8
+                        + self.line_1.countBytes()
+                        + self.line_2.countBytes()
+                        + self.line_3.countBytes()
+                        + self.line_4.countBytes()
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Update_Sign } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeInt(u64, @bitCast(self.location), .big);
+                try self.line_1.write(writer);
+                try self.line_2.write(writer);
+                try self.line_3.write(writer);
+                try self.line_4.write(writer);
+
+                try writer.flush();
+            }
         };
 
         pub const Player_Abilities = struct {
@@ -1250,12 +1718,50 @@ pub const play = struct {
                 can_fly = 0x04,
                 god_mode = 0x08,
             };
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        1
+                        + 4
+                        + 4
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Player_Abilities } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeByte(@bitCast(self.flags));
+                _ = try writer.writeInt(u32, @bitCast(self.flying_speed), .big);
+                _ = try writer.writeInt(u32, @bitCast(self.walking_speed), .big);
+
+                try writer.flush();
+            }
         };
 
         pub const Tab_Complete = struct {
             text: String,
             has_position: bool,
             looked_at_block: ?Position,
+            
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        self.text.countBytes()
+                        + 1
+                        + if(self.has_position) 8 else 0
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Tab_Complete } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                try self.text.write(writer);
+                _ = try writer.writeByte(@bitCast(self.has_position));
+                if(self.has_position) {
+                    _ = try writer.writeInt(u64, @bitCast(self.looked_at_block.?), .big);
+                }
+
+                try writer.flush();
+            }
         };
 
         pub const Client_Settings = struct {
@@ -1274,6 +1780,28 @@ pub const play = struct {
                 right_pants = 0x20,
                 hat = 0x40,
             };
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        self.locale.countBytes()
+                        + 1
+                        + 1
+                        + 1
+                        + 1
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Client_Settings } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                try self.locale.write(writer);
+                _ = try writer.writeByte(@bitCast(self.view_distance));
+                _ = try writer.writeByte(@bitCast(self.chat_mode));
+                _ = try writer.writeByte(@bitCast(self.chat_colors));
+                _ = try writer.writeByte(self.displayed_skin_parts);
+
+                try writer.flush();
+            }
         };
 
         pub const Client_Status = struct {
@@ -1284,15 +1812,59 @@ pub const play = struct {
                 stats = 1,
                 archievement = 2,
             };
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        self.action_ID.countBytes()
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Client_Status } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                try self.action_ID.write(writer);
+
+                try writer.flush();
+            }
         };
 
         pub const Plugin_Message = struct {
             channel: String,
             data: []const u8, // TODO see https://minecraft.wiki/w/Plugin_channels?oldid=2767993
+            
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        self.channel.countBytes()
+                        + @as(u32, @truncate(self.data.len))
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Plugin_Message } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                try self.channel.write(writer);
+                _ = try writer.write(self.data);
+
+                try writer.flush();
+            }
         };
 
         pub const Spectate = struct {
             target_player: u64,
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        8
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Spectate } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                _ = try writer.writeInt(u64, self.target_player, .big);
+
+                try writer.flush();
+            }
         };
 
         pub const Resource_Pack_Status = struct {
@@ -1305,6 +1877,22 @@ pub const play = struct {
                 failed = 2,
                 accepted = 3,
             };
+
+            pub fn send(self: @This(), writer: *Writer) !void {
+                try VarInt.writeInt(@bitCast(
+                        self.hash.countBytes()
+                        + self.result.countBytes()
+                        + 1), 
+                    writer
+                );
+                const id: ID = .{ .play = .{ .serverbound = .Resource_Pack_Status } };
+                try VarInt.writeIntUnchecked(@intFromEnum(id.play.serverbound), writer);
+
+                try self.hash.write(writer);
+                try self.result.write(writer);
+
+                try writer.flush();
+            }
         };
     };
 };

@@ -13,20 +13,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // Use zig-glfw
-    const glfw_dep = b.dependency("glfw", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    exe.root_module.addImport("glfw", glfw_dep.module("glfw"));
-
-    const gl_bindings = @import("zigglgen").generateBindingsModule(b, .{
-        .api = .gl,
-        .version = .@"4.1",
-        .profile = .core,
-    });
-    exe.root_module.addImport("gl", gl_bindings);
-
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");

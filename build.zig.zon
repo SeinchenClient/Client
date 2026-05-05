@@ -2,17 +2,8 @@
     .name = .zig,
     .version = "0.0.0",
     .fingerprint = 0xc1ce10814c3a5b78, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.15.2",
-    .dependencies = .{
-        .glfw = .{
-            .url = "https://github.com/terraquad/zig-glfw/archive/8a6e5d9775951365953e67da700febdf806ba971.tar.gz",
-            .hash = "glfw-0.3.0-YPzX95wuBQDdcR901jwAYy550-Rbv-oNsgH8qNyLbJYi",
-        },
-        .zigglgen = .{
-            .url = "git+https://github.com/castholm/zigglgen.git#b624cc7d2e984f61c63a83a3d0ad6c686782f961",
-            .hash = "zigglgen-0.4.0-bmyqLV6PLwAt0VCiGVgz6kZ448zaiTix2Z8MXEEuN4Vi",
-        },
-    },
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",

@@ -40,7 +40,7 @@ pub const VarInt = struct {
         for(0..5) |offset| {
             const t = try reader.takeByte();
             i |= (t & 0x7f) << @as(u3, @truncate(offset * 7));
-            if(t & 0x80 == 1) continue else break;
+            if(t & 0x80 == 0x80) continue else break;
         }
         return .{ .value = @bitCast(i) };
     }
@@ -54,7 +54,8 @@ pub const VarInt = struct {
             _ = try writer.writeByte(0);
             return;
         }
-        const needed_bytes: u8 = (@bitSizeOf(i32) - @clz(value) - 1) / 7 + 1;
+        // const needed_bytes: u8 = (@bitSizeOf(i32) - @clz(value) - 1) / 7 + 1;
+        const needed_bytes: u8 = @truncate(countBytesInt(value));
         // var bytes: [needed_bytes]u8 = undefined;
         for(0..needed_bytes - 1) |idx| {
             // bytes[idx] = (@as(u8, @truncate(value >> (idx * 7))) & 0x7f) | 0x80;
@@ -68,12 +69,20 @@ pub const VarInt = struct {
         // _ = try writer.write(&bytes);
     }
 
+    pub inline fn writeUnchecked(self: @This(), writer: *Writer) !void {
+        return writeIntUnchecked(self.value, writer);
+    }
+
+    pub inline fn writeIntUnchecked(value: i32, writer: *Writer) !void {
+        _ = try writer.writeByte(@as(u8, @truncate(@as(u32, @bitCast(value)))));
+    }
+
     pub inline fn countBytes(self: @This()) u32 {
         return countBytesInt(self.value);
     }
 
     pub inline fn countBytesInt(value: i32) u32 {
-        return (@bitSizeOf(i32) - @clz(value) - 1) / 7 + 1;
+        return if(value == 0) 1 else (@bitSizeOf(i32) - @clz(value) - 1) / 7 + 1;
     }
 };
 
@@ -99,7 +108,8 @@ pub const VarLong = struct {
             _ = try writer.writeByte(0);
             return;
         }
-        const needed_bytes: u8 = (@bitSizeOf(i64) - @clz(value) - 1) / 7 + 1;
+        // const needed_bytes: u8 = (@bitSizeOf(i64) - @clz(value) - 1) / 7 + 1;
+        const needed_bytes: u8 = @truncate(countBytesLong(value));
         var bytes: [needed_bytes]u8 = undefined;
         for(0..needed_bytes - 1) |idx| {
             bytes[idx] = (@as(u8, @truncate(value >> (idx * 7))) & 0x7f) | 0x80;
@@ -109,31 +119,48 @@ pub const VarLong = struct {
         _ = try writer.write(&bytes);
     }
 
+    pub inline fn writeUnchecked(self: @This(), writer: *Writer) !void {
+        return writeLongUnchecked(self.value, writer);
+    }
+
+    pub inline fn writeLongUnchecked(value: i64, writer: *Writer) !void {
+        _ = try writer.writeByte(@as(u8, @truncate(@as(u64, @bitCast(value)))));
+    }
+
     pub inline fn countBytes(self: @This()) u32 {
         return countBytesLong(self.value);
     }
 
     pub inline fn countBytesLong(value: i64) u32 {
-        return (@bitSizeOf(i64) - @clz(value) - 1) / 7 + 1;
+        return if(value == 0 ) 1 else (@bitSizeOf(i64) - @clz(value) - 1) / 7 + 1;
     }
 };
 
 pub const String = struct {
     value: []const u8,
-    allocator: Allocator,
+    allocator: ?Allocator,
 
     pub fn init(reader: *Reader, allocator: Allocator) !@This() {
         const len = (try VarInt.init(reader)).value;
-        const buf = try allocator.alloc(u8, len);
-        @memcpy(buf, try reader.take(len));
+        const buf = try allocator.alloc(u8, @intCast(len));
+        @memcpy(buf, try reader.take(@intCast(len)));
         return .{ 
             .value = buf,
             .allocator = allocator,
         };
     }
 
+    pub fn from(value: []const u8) @This() {
+        return .{
+            .value = value,
+            .allocator = null,
+        };
+    }
+
     pub inline fn deinit(self: @This()) void {
-        self.allocator.free(self.value);
+        if(self.allocator) |alloc| {
+            alloc.free(self.value);
+        }
     }
 
     pub inline fn write(self: @This(), writer: *Writer) !void {

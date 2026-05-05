@@ -2,3 +2,4 @@ zig-out
 zig-pkg
 .zig-cache
 mcp918
+src/secrets.zig

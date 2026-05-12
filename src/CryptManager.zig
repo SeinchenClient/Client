@@ -19,7 +19,8 @@ const Auth = @import("secrets.zig");
 const packet = @import("packet.zig");
 
 
-sharedSecret: []u8, // if the context is all we need this could be removed idk yet
+sharedSecret: [16]u8,
+shiftRegister: [16]u8,
 ctx: aes.AesEncryptCtx(Aes128),
 
 
@@ -47,16 +48,22 @@ pub fn initEncryption(
 ) !void {
     const publicKeyInfo = try asn1.der.decode(SubjectPublicKeyInfo, request.public_key);
     const publicKey = try asn1.der.decode(SubjectPublicKey, publicKeyInfo.subjectPublicKey.bytes);
+    std.debug.print("{x}\n\n", .{request.public_key});
+    std.debug.print("{x}\n\n", .{request.verify_token});
 
     var sharedSecret: [16]u8 = undefined;
     try io.randomSecure(&sharedSecret);
-    self.sharedSecret = sharedSecret[0..];
+    self.sharedSecret = sharedSecret;
+    self.shiftRegister = sharedSecret;
+    std.debug.print("{x}\n\n", .{sharedSecret[0..]});
 
     const encryptedSharedSecret = try decryptRSA(io, allocator, sharedSecret[0..], publicKey);
     defer allocator.free(encryptedSharedSecret);
+    std.debug.print("{x}\n\n", .{encryptedSharedSecret});
 
     const encryptedVerifyToken = try decryptRSA(io, allocator, request.verify_token, publicKey);
     defer allocator.free(encryptedVerifyToken);
+    std.debug.print("{x}\n\n\n", .{encryptedVerifyToken});
 
     try self.authenticate(request, io, allocator);
 
@@ -110,7 +117,7 @@ pub fn authenticate(
     _ = .{io, allocator};
     var digest = Sha1.init(.{});
     digest.update(request.server_ID.value);
-    digest.update(self.sharedSecret);
+    digest.update(self.sharedSecret[0..]);
     digest.update(request.public_key);
     var serverIdBuf: [41]u8 = undefined;
     const serverId = toString(hexdigest(&digest), serverIdBuf[0..]);
@@ -143,6 +150,7 @@ fn acquireAuthorizationCode(allocator: Allocator, io: Io) ![]const u8 {
         \\&response_type=code
         \\&redirect_uri=http://localhost:28003
         \\&scope=XboxLive.signin
+        \\&prompt=select_account
     ;
 
     // open link in browser
@@ -374,37 +382,27 @@ fn toString(uuid: i160, buf: []u8) []u8 {
     return std.fmt.bufPrint(buf, "{x}", .{uuid}) catch unreachable;
 }
 
-// TODO both functions are the same, haven't been tested, the encrypted/decrypted string should be in the input buffer
-
 /// AES-128/CFB8 encryption
-pub fn encryptAES(self: @This(), message: []u8) void {
-    var shiftRegister = self.sharedSecret; // shared secret used as IV
-
+pub fn encryptAES(self: *@This(), message: []u8) void {
     for(message) |*b| {
         var keyStream: [16]u8 = undefined;
-        self.ctx.encrypt(&keyStream, &shiftRegister);
+        self.ctx.encrypt(&keyStream, &self.shiftRegister);
+        @memmove(self.shiftRegister[0..15], self.shiftRegister[1..16]);
 
-        const cipherText = b.* ^ keyStream[0];
-        b.* = cipherText;
-
-        @memmove(shiftRegister[0..15], shiftRegister[1..16]);
-        shiftRegister[15] = cipherText;
+        b.* ^= keyStream[0];
+        self.shiftRegister[15] = b.*;
     }
 }
 
 /// AES-128/CFB8 decryption
-pub fn decryptAES(self: @This(), message: []u8) void {
-    var shiftRegister = self.sharedSecret; // shared secret used as IV
-
+pub fn decryptAES(self: *@This(), message: []u8) void {
     for(message) |*b| {
         var keyStream: [16]u8 = undefined;
-        self.ctx.encrypt(&keyStream, &shiftRegister);
+        self.ctx.encrypt(&keyStream, &self.shiftRegister);
+        @memmove(self.shiftRegister[0..15], self.shiftRegister[1..16]);
+        self.shiftRegister[15] = b.*;
 
-        const plainText = b.* ^ keyStream[0];
-        b.* = plainText;
-
-        @memmove(shiftRegister[0..15], shiftRegister[1..16]);
-        shiftRegister[15] = plainText;
+        b.* ^= keyStream[0];
     }
 }
 
@@ -429,7 +427,7 @@ const XboxResponse = struct {
 
 const McResponse = struct {
     username: []u8,
-    roles: []struct {}, // always empty array?
+    roles: []struct {},
     metadata: struct {},
     access_token: []u8,
     token_type: []u8,

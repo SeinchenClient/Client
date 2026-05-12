@@ -34,21 +34,31 @@ pub fn main(init: std.process.Init) !void {
     };
     try pack2.send(writer);
 
+    var cryptManager: CryptManager = undefined;
+
     var length = (try data.VarInt.init(reader)).value;
     const packID = (try data.VarInt.init(reader)).value;
     if(packID == 0x01) {
         length -= 1;
         const encryptionRequest = try packet.login.clientbound.Encryption_Request.receive(reader, @bitCast(length), init.gpa);
 
-        var cryptManager: CryptManager = undefined;
         try cryptManager.initEncryption(encryptionRequest, writer, init.io, init.gpa);
-
     }
 
+    const sockbuf = try init.gpa.alloc(u8, 4096);
+    defer init.gpa.free(sockbuf);
+
     while(true) {
-        const len = (try data.VarInt.init(reader)).value;
-        const packetID = (try data.VarInt.init(reader)).value;
-        const payload: []u8 = try reader.take(@intCast(len - @as(i32, @intCast(data.VarInt.countBytesInt(packetID)))));
+        const msg = try stream.socket.receive(init.io, sockbuf);
+        // std.debug.print("{x}\n", .{msg.data});
+        cryptManager.decryptAES(msg.data);
+        var rd = std.Io.Reader.fixed(msg.data);
+
+        const len = (try data.VarInt.init(&rd)).value;
+        const packetID = (try data.VarInt.init(&rd)).value;
+        const payload: []u8 = try rd.take(@intCast(len-1));
+        
+        // std.debug.print("{x}\n\n", .{msg.data});
 
         std.debug.print("[{}] {}: {s}\n", .{len, packetID, payload});
     }

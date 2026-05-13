@@ -45,21 +45,26 @@ pub fn main(init: std.process.Init) !void {
         try cryptManager.initEncryption(encryptionRequest, writer, init.io, init.gpa);
     }
 
-    const sockbuf = try init.gpa.alloc(u8, 4096);
-    defer init.gpa.free(sockbuf);
+    var compression_buf: [4]u8 = undefined;
+    _ = try reader.readSliceShort(compression_buf[0..]);
+    cryptManager.decryptAES(compression_buf[0..]);
+    var compReader = std.Io.Reader.fixed(compression_buf[2..]);
+    const pack3 = try packet.login.clientbound.Set_Compression.receive(&compReader, 2, init.gpa);
+    std.debug.print("{}\n\n", .{pack3.threshold.value});
 
     while(true) {
-        const msg = try stream.socket.receive(init.io, sockbuf);
-        // std.debug.print("{x}\n", .{msg.data});
-        cryptManager.decryptAES(msg.data);
-        var rd = std.Io.Reader.fixed(msg.data);
-
-        const len = (try data.VarInt.init(&rd)).value;
-        const packetID = (try data.VarInt.init(&rd)).value;
-        const payload: []u8 = try rd.take(@intCast(len-1));
+        const raw_len = try data.VarInt.initDecrypting(reader, &cryptManager);
+        const data_len = try data.VarInt.initDecrypting(reader, &cryptManager);
+        const msg = try reader.readAlloc(init.gpa, @intCast(@as(u32, @intCast(raw_len.value)) - data_len.countBytes()));
+        defer init.gpa.free(msg);
         
-        // std.debug.print("{x}\n\n", .{msg.data});
+        cryptManager.decryptAES(msg);
+        var rd = std.Io.Reader.fixed(msg);
 
-        std.debug.print("[{}] {}: {s}\n", .{len, packetID, payload});
+        if(data_len.value != 0) continue;
+        const packetID = (try data.VarInt.init(&rd)).value;
+        const payload: []u8 = rd.buffered();
+        
+        std.debug.print("[{}] {}: {s}\n", .{raw_len.value, packetID, payload});
     }
 }

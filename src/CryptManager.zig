@@ -396,14 +396,21 @@ pub fn encryptAES(self: *@This(), message: []u8) void {
 
 /// AES-128/CFB8 decryption
 pub fn decryptAES(self: *@This(), message: []u8) void {
+    var keyStream: [16]u8 = undefined;
     for(message) |*b| {
-        var keyStream: [16]u8 = undefined;
-        self.ctx.encrypt(&keyStream, &self.shiftRegister);
-        @memmove(self.shiftRegister[0..15], self.shiftRegister[1..16]);
-        self.shiftRegister[15] = b.*;
-
-        b.* ^= keyStream[0];
+        b.* = self.decryptByteAES(&keyStream, b.*);
+        // self.ctx.encrypt(&keyStream, &self.shiftRegister);
+        // @memmove(self.shiftRegister[0..15], self.shiftRegister[1..16]);
+        // self.shiftRegister[15] = b.*;
+        // b.* ^= keyStream[0];
     }
+}
+
+pub inline fn decryptByteAES(self: *@This(), keyStream: *[16]u8, byte: u8) u8 {
+    self.ctx.encrypt(keyStream, &self.shiftRegister);
+    @memmove(self.shiftRegister[0..15], self.shiftRegister[1..16]);
+    self.shiftRegister[15] = byte;
+    return byte ^ keyStream[0];
 }
 
 const AccessResponse = struct {

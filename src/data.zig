@@ -5,6 +5,8 @@ const Allocator = std.mem.Allocator;
 
 const nbt = @import("nbt.zig");
 
+const CryptManager = @import("CryptManager.zig");
+
 // pub const Type = union(enum(u8)) {
 //     Boolean: bool,
 //     Byte: i8,
@@ -35,11 +37,22 @@ const nbt = @import("nbt.zig");
 pub const VarInt = struct { 
     value: i32,
 
-    pub fn init(reader: *Reader) !@This() { // TODO test probably need to switch endianness
+    pub fn init(reader: *Reader) !@This() {
         var i: u32 = 0;
         for(0..5) |offset| {
             const t = try reader.takeByte();
-            i |= (t & 0x7f) << @as(u3, @truncate(offset * 7));
+            i |= @as(u32, t & 0x7f) << @as(u5, @truncate(offset * 7));
+            if(t & 0x80 == 0x80) {} else break;
+        }
+        return .{ .value = @bitCast(i) };
+    }
+
+    pub fn initDecrypting(reader: *Reader, crypt: *CryptManager) !@This() {
+        var i: u32 = 0;
+        var keyStream: [16]u8 = undefined;
+        for(0..5) |offset| {
+            const t = crypt.decryptByteAES(&keyStream, try reader.takeByte());
+            i |= @as(u32, t & 0x7f) << @as(u5, @truncate(offset * 7));
             if(t & 0x80 == 0x80) continue else break;
         }
         return .{ .value = @bitCast(i) };
@@ -54,19 +67,13 @@ pub const VarInt = struct {
             _ = try writer.writeByte(0);
             return;
         }
-        // const needed_bytes: u8 = (@bitSizeOf(i32) - @clz(value) - 1) / 7 + 1;
         const needed_bytes: u8 = @truncate(countBytesInt(value));
-        // var bytes: [needed_bytes]u8 = undefined;
         for(0..needed_bytes - 1) |idx| {
-            // bytes[idx] = (@as(u8, @truncate(value >> (idx * 7))) & 0x7f) | 0x80;
             const byte = (@as(u8, @truncate(@as(u32, @bitCast(value)) >> @truncate(idx * 7))) & 0x7f) | 0x80;
             _ = try writer.writeByte(byte);
         }
-        // bytes[needed_bytes - 1] = @as(u8, @truncate(value >> ((needed_bytes - 1) * 7))) & 0x7f;
         const byte = @as(u8, @truncate(@as(u32, @bitCast(value)) >> @truncate((needed_bytes - 1) * 7))) & 0x7f;
         _ = try writer.writeByte(byte);
-
-        // _ = try writer.write(&bytes);
     }
 
     pub inline fn writeUnchecked(self: @This(), writer: *Writer) !void {
@@ -93,7 +100,7 @@ pub const VarLong = struct {
         var i: u64 = 0;
         for(0..10) |offset| {
             const t = try reader.takeByte();
-            i |= (t & 0x7f) << (offset * 7);
+            i |= @as(u64, t & 0x7f) << @as(u6, @truncate(offset * 7));
             if(t & 0x80 == 1) continue else break;
         }
         return .{ .value = @bitCast(i) };
